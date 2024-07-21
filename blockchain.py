@@ -4,13 +4,25 @@ from textwrap import dedent
 from time import time
 from uuid import uuid4
 from flask import Flask, jsonify, request
+from urllib.parse import urlparse, parse_qs
+import requests
 
 
 class Blockchain(object):
     def __init__(self):
+        self.nodes = set()
         self.chain = []
         self.current_transactions = []
         self.new_block(previous_hash=1, proof=100)
+
+    '''
+    Add a new node to the list of nodes
+    :param address: <str> Address of the node. Eg. 'http://192.168.0.5:5000'
+    :return: None
+    '''
+    def register_node(self, address):
+        parsed_url = urlparse(address)
+        self.nodes.add(parsed_url.netloc)
 
     '''
     Creates a new Block in the Blockchain
@@ -90,6 +102,58 @@ class Blockchain(object):
         guess_hash = hashlib.sha256(guess).hexdigest()
         return guess_hash[:4] == "0000"
 
+    '''
+    Determines whether a given blockchain is valid
+    :param chain: <list> a blockchain
+    :return: <bool> True if valid, False otherwise
+    '''
+    def valid_chain(self, chain):
+        last_block = chain[0]
+        current_index = 1
+
+        while current_index < len(chain):
+            block = chain[current_index]
+            print(f'{last_block}')
+            print(f'{block}')
+            print("\n-----------\n")
+            if block['previous_hash'] != self.hash(last_block):
+                return False
+            if not self.valid_proof(last_block['proof'], block['proof']):
+                return False
+
+            last_block = block
+            current_index += 1
+
+        return True
+
+    '''
+    Consensus Algorithm, it resolves conflicts by replacing
+    our chain with the longest one in the network.
+    :return: <bool> True if valid, False otherwise
+    '''
+    def resolve_conflicts(self, chain):
+        neighbors = self.nodes
+        new_chain = None
+
+        max_length = len(self.chain)
+
+        for node in neighbors:
+            response = request.get(f'http://{node}/chain')
+
+            if response.status_code == 200:
+                length = response.json()['length']
+                chain = response.json()['chain']
+
+                if length > max_length and self.valid_chain(chain):
+                    max_length = length
+                    new_chain = chain
+
+        if new_chain:
+            self.chain = new_chain
+            return True
+
+        return False
+
 
 app = Flask(__name__)
 node_identifier = str(uuid4()).replace('-','')
@@ -143,6 +207,41 @@ def full_chain():
         'chain': blockchain.chain,
         'length': len(blockchain.chain),
     }
+
+    return jsonify(response), 200
+
+@app.route('/nodes/register', methods=['POST'])
+def register_nodes():
+    values = request.get_json()
+
+    nodes = values.get('nodes')
+    if nodes is None:
+        return "Error: Please supply a valid list of nodes"
+
+    for node in nodes:
+        blockchain.register_node(node)
+
+    response = {
+        'message': 'Mew nodes have been added',
+        'total_nodes': len(blockchain.chain),
+    }
+
+    return jsonify(response), 201
+
+@app.route('/nodes/resolve', methods=['GET'])
+def consenus():
+    replaced = blockchain.resolve_conflicts()
+
+    if replaced:
+        response = {
+            'message': 'Our chain was replaced',
+            'new_chain': blockchain.chain
+        }
+    else:
+        response = {
+            'message': 'Our chain is authoritative',
+            'chain': blockchain.chain
+        }
 
     return jsonify(response), 200
 
